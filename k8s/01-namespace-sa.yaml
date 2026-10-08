@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    name: observability
+    app.kubernetes.io/part-of: cargill-observability-platform
+    environment: production
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: data-prepper-sa
+  namespace: observability
+  annotations:
+    # AWS EKS IRSA (IAM Roles for Service Accounts)
+    # Grants Data Prepper permissions to publish indices directly to AWS OpenSearch & access MSK Kafka
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/cargill-data-prepper-opensearch-irsa-role"
+  labels:
+    app.kubernetes.io/name: data-prepper
+    app.kubernetes.io/component: log-processor

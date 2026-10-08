@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-prepper-pipelines-config
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: data-prepper
+    app.kubernetes.io/component: pipeline-config
+data:
+  pipelines.yaml: |
+    # =========================================================================
+    # Cargill Centralized Logging Pipeline: Apache Kafka -> Data Prepper -> AWS OpenSearch
+    # =========================================================================
+    cargill-log-pipeline:
+      workers: 4
+      delay: 3000
+      
+      # 1. Source: Ingest real-time log streams buffered in Apache Kafka (Amazon MSK)
+      source:
+        kafka:
+          bootstrap_servers:
+            - "b-1.cargill-msk-cluster.us-east-1.kafka.amazonaws.com:9092"
+            - "b-2.cargill-msk-cluster.us-east-1.kafka.amazonaws.com:9092"
+          topics:
+            - name: "cargill-application-logs"
+              group_id: "data-prepper-consumer-group"
+              auto_offset_reset: "latest"
+              session_timeout: 45000
+              heart_beat_interval: 15000
+          serde: "json"
+
+      # 2. Buffer: In-memory queue to absorb ingestion bursts
+      buffer:
+        bounded_blocking:
+          buffer_size: 4096
+          batch_size: 512
+
+      # 3. Processors: Parse, transform, normalize, and enrich log events
+      processor:
+        - parse_json:
+            source: "log"
+        - date:
+            from_time_received: true
+            destination: "@timestamp"
+        - add_entries:
+            entries:
+              - key: "environment"
+                value: "production"
+              - key: "platform"
+                value: "cargill-supplychain-eks"
+              - key: "ingestion_engine"
+                value: "data-prepper"
+        - drop_events:
+            # Filter out health check ping noise to optimize OpenSearch storage costs
+            drop_when: '/path == "/health" && /status == 200'
+
+      # 4. Sink: Ship indexed logs into Amazon OpenSearch Service via AWS SigV4 / IAM
+      sink:
+        - opensearch:
+            hosts: ["https://vpc-cargill-opensearch.us-east-1.es.amazonaws.com:443"]
+            index: "cargill-app-logs-%{yyyy.MM.dd}"
+            aws:
+              region: "us-east-1"
+              sts_role_arn: "arn:aws:iam::123456789012:role/cargill-data-prepper-opensearch-irsa-role"
+            bulk:
+              flush_timeout: 5s
+              size: 5mb
+            estimate_bulk_size_using_compression: true
+            dlq:
+              s3:
+                bucket: "cargill-observability-dlq-failed-logs"
+                region: "us-east-1"
+                key_path_prefix: "data-prepper-failures/"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-prepper-server-config
+  namespace: observability
+data:
+  data-prepper-config.yaml: |
+    ssl: false
+    serverPort: 2021
+    metricRegistries:
+      - Prometheus
+    metricPort: 2021

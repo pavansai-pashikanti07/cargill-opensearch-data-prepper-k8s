@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensearch-data-prepper
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: data-prepper
+    app.kubernetes.io/instance: production
+    app.kubernetes.io/component: log-processor
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: data-prepper
+  template:
+    metadata:
+      labels:
+        app: data-prepper
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "2021"
+        prometheus.io/path: "/metrics/prometheus"
+    spec:
+      serviceAccountName: data-prepper-sa
+      # High Availability: Spread pods across multiple AWS Availability Zones
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - data-prepper
+                topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: data-prepper
+          image: opensearchproject/data-prepper:2.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JAVA_OPTS
+              value: "-Xms2g -Xmx2g -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
+          ports:
+            - containerPort: 2021
+              name: metrics-http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 2021
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 2021
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 2
+          volumeMounts:
+            - name: pipelines-volume
+              mountPath: /usr/share/data-prepper/config/pipelines.yaml
+              subPath: pipelines.yaml
+              readOnly: true
+            - name: server-config-volume
+              mountPath: /usr/share/data-prepper/config/data-prepper-config.yaml
+              subPath: data-prepper-config.yaml
+              readOnly: true
+      volumes:
+        - name: pipelines-volume
+          configMap:
+            name: data-prepper-pipelines-config
+        - name: server-config-volume
+          configMap:
+            name: data-prepper-server-config
